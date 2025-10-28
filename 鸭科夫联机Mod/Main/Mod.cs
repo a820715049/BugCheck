@@ -611,6 +611,39 @@ namespace 鸭科夫联机Mod
         public static ModBehaviour Instance; //一切的开始 Hello World!
         public bool IsServer { get; private set; } = false;
 
+        private sealed class ConnectionUiState
+        {
+            private readonly List<string> _hosts = new List<string>();
+            private readonly HashSet<string> _hostSet = new HashSet<string>();
+
+            public bool IsConnecting { get; set; }
+            public string Status { get; set; } = "未连接";
+            public string ManualIP { get; set; } = "127.0.0.1";
+            public string ManualPort { get; set; } = "9050";
+            public float BroadcastTimer { get; set; }
+            public float BroadcastInterval { get; set; } = 5f;
+
+            public IReadOnlyList<string> Hosts => _hosts;
+            public int HostCount => _hosts.Count;
+
+            public void ResetHosts()
+            {
+                _hosts.Clear();
+                _hostSet.Clear();
+            }
+
+            public bool TryAddHost(string host)
+            {
+                if (string.IsNullOrWhiteSpace(host) || !_hostSet.Add(host))
+                {
+                    return false;
+                }
+
+                _hosts.Add(host);
+                return true;
+            }
+        }
+
         public NetManager netManager;
         public NetDataWriter writer;
         public int port = 9050;
