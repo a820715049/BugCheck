@@ -45,6 +45,8 @@
     <Compile Include="Main\COOPManager.cs" />
     <Compile Include="Main\HarmonyFix.cs" />
     <Compile Include="Main\Mod.cs" />
+    <Compile Include="Main\Networking\LanDiscoveryController.cs" />
+    <Compile Include="Main\Networking\NetworkPlayerRegistry.cs" />
     <Compile Include="NetTag\NetGrenadeTag.cs" />
     <Compile Include="Net\NetInterpolator.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
