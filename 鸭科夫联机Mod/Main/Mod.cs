@@ -611,19 +611,45 @@ namespace 鸭科夫联机Mod
         public static ModBehaviour Instance; //一切的开始 Hello World!
         public bool IsServer { get; private set; } = false;
 
+        private sealed class ConnectionUiState
+        {
+            private readonly List<string> _hosts = new List<string>();
+            private readonly HashSet<string> _hostSet = new HashSet<string>();
+
+            public bool IsConnecting { get; set; }
+            public string Status { get; set; } = "未连接";
+            public string ManualIP { get; set; } = "127.0.0.1";
+            public string ManualPort { get; set; } = "9050";
+            public float BroadcastTimer { get; set; }
+            public float BroadcastInterval { get; set; } = 5f;
+
+            public IReadOnlyList<string> Hosts => _hosts;
+            public int HostCount => _hosts.Count;
+
+            public void ResetHosts()
+            {
+                _hosts.Clear();
+                _hostSet.Clear();
+            }
+
+            public bool TryAddHost(string host)
+            {
+                if (string.IsNullOrWhiteSpace(host) || !_hostSet.Add(host))
+                {
+                    return false;
+                }
+
+                _hosts.Add(host);
+                return true;
+            }
+        }
+
         public NetManager netManager;
         public NetDataWriter writer;
         public int port = 9050;
-        private List<string> hostList = new List<string>();
-        private HashSet<string> hostSet = new HashSet<string>();
-        private bool isConnecting = false;
-        private string status = "未连接";
-        private string manualIP = "127.0.0.1";
-        private string manualPort = "9050"; // GTX 5090 我也想要
+        private readonly ConnectionUiState connectionUi = new ConnectionUiState();
         public NetPeer connectedPeer;
         public bool networkStarted = false;
-        private float broadcastTimer = 0f;
-        private float broadcastInterval = 5f;
         private float syncTimer = 0f;
         private float syncInterval = 0.015f; // =========== Mod开发者注意现在是TI版本也就是满血版无同步延迟，0.03 ~33ms ===================
         public Harmony Harmony;
@@ -1112,10 +1138,10 @@ namespace 鸭科夫联机Mod
             }
 
             networkStarted = true;
-            status = "网络已启动";
-            hostList.Clear();
-            hostSet.Clear();
-            isConnecting = false;
+            connectionUi.Status = "网络已启动";
+            connectionUi.ResetHosts();
+            connectionUi.IsConnecting = false;
+            connectionUi.BroadcastTimer = 0f;
             connectedPeer = null;
 
             playerStatuses.Clear();
@@ -1276,13 +1302,13 @@ namespace 鸭科夫联机Mod
 
                // if (IsServer) Server_EnsureAllHealthHooks();
 
-                if (!IsServer && !isConnecting)
+                if (!IsServer && !connectionUi.IsConnecting)
                 {
-                    broadcastTimer += Time.deltaTime;
-                    if (broadcastTimer >= broadcastInterval)
+                    connectionUi.BroadcastTimer += Time.deltaTime;
+                    if (connectionUi.BroadcastTimer >= connectionUi.BroadcastInterval)
                     {
                         SendBroadcastDiscovery();
-                        broadcastTimer = 0f;
+                        connectionUi.BroadcastTimer = 0f;
                     }
                 }
 
@@ -2347,8 +2373,8 @@ namespace 鸭科夫联机Mod
 
             if (!IsServer)
             {
-                status = $"已连接到 {peer.EndPoint}";
-                isConnecting = false;
+                connectionUi.Status = $"已连接到 {peer.EndPoint}";
+                connectionUi.IsConnecting = false;
                 SendClientStatusUpdate();
             }
 
@@ -4343,8 +4369,8 @@ namespace 鸭科夫联机Mod
             Debug.Log($"断开连接: {peer.EndPoint}, 原因: {disconnectInfo.Reason}");
             if (!IsServer)
             {
-                status = "连接断开";
-                isConnecting = false;
+                connectionUi.Status = "连接断开";
+                connectionUi.IsConnecting = false;
             }
             if (connectedPeer == peer) connectedPeer = null;
 
@@ -4389,10 +4415,8 @@ namespace 鸭科夫联机Mod
             else if (!IsServer && msg == "DISCOVER_RESPONSE")
             {
                 string hostInfo = remoteEndPoint.Address + ":" + port;
-                if (!hostSet.Contains(hostInfo))
+                if (connectionUi.TryAddHost(hostInfo))
                 {
-                    hostSet.Add(hostInfo);
-                    hostList.Add(hostInfo);
                     Debug.Log("发现主机: " + hostInfo);
                 }
             }
@@ -4411,14 +4435,14 @@ namespace 鸭科夫联机Mod
             // 基础校验
             if (string.IsNullOrWhiteSpace(ip))
             {
-                status = "IP为空";
-                isConnecting = false;
+                connectionUi.Status = "IP为空";
+                connectionUi.IsConnecting = false;
                 return;
             }
             if (port <= 0 || port > 65535)
             {
-                status = "端口不合法";
-                isConnecting = false;
+                connectionUi.Status = "端口不合法";
+                connectionUi.IsConnecting = false;
                 return;
             }
 
@@ -4427,7 +4451,7 @@ namespace 鸭科夫联机Mod
                 Debug.LogWarning("服务器模式不能主动连接其他主机");
                 return;
             }
-            if (isConnecting)
+            if (connectionUi.IsConnecting)
             {
                 Debug.LogWarning("正在连接中.");
                 return;
@@ -4443,8 +4467,8 @@ namespace 鸭科夫联机Mod
                 catch (Exception e)
                 {
                     Debug.LogError($"启动客户端网络失败：{e}");
-                    status = "客户端网络启动失败";
-                    isConnecting = false;
+                    connectionUi.Status = "客户端网络启动失败";
+                    connectionUi.IsConnecting = false;
                     return;
                 }
             }
@@ -4452,15 +4476,15 @@ namespace 鸭科夫联机Mod
             // 二次确认
             if (netManager == null || !netManager.IsRunning)
             {
-                status = "客户端未启动";
-                isConnecting = false;
+                connectionUi.Status = "客户端未启动";
+                connectionUi.IsConnecting = false;
                 return;
             }
 
             try
             {
-                status = $"连接中: {ip}:{port}";
-                isConnecting = true;
+                connectionUi.Status = $"连接中: {ip}:{port}";
+                connectionUi.IsConnecting = true;
 
                 // 若已有连接，先断开（以免残留状态）
                 try { connectedPeer?.Disconnect(); } catch { }
@@ -4475,8 +4499,8 @@ namespace 鸭科夫联机Mod
             catch (Exception ex)
             {
                 Debug.LogError($"连接到主机失败: {ex}");
-                status = "连接失败";
-                isConnecting = false;
+                connectionUi.Status = "连接失败";
+                connectionUi.IsConnecting = false;
                 connectedPeer = null;
             }
         }
@@ -4708,13 +4732,13 @@ namespace 鸭科夫联机Mod
             {
                 GUILayout.Label("🔍 局域网主机列表");
 
-                if (hostList.Count == 0)
+                if (connectionUi.HostCount == 0)
                 {
                     GUILayout.Label("（等待广播回应，暂无主机）");
                 }
                 else
                 {
-                    foreach (var host in hostList)
+                    foreach (var host in connectionUi.Hosts)
                     {
                         GUILayout.BeginHorizontal();
                         if (GUILayout.Button("连接", GUILayout.Width(60)))
@@ -4739,31 +4763,31 @@ namespace 鸭科夫联机Mod
                 GUILayout.Label("手动输入 IP 和端口连接:");
                 GUILayout.BeginHorizontal();
                 GUILayout.Label("IP:", GUILayout.Width(40));
-                manualIP = GUILayout.TextField(manualIP, GUILayout.Width(150));
+                connectionUi.ManualIP = GUILayout.TextField(connectionUi.ManualIP, GUILayout.Width(150));
                 GUILayout.EndHorizontal();
                 GUILayout.BeginHorizontal();
                 GUILayout.Label("端口:", GUILayout.Width(40));
-                manualPort = GUILayout.TextField(manualPort, GUILayout.Width(150));
+                connectionUi.ManualPort = GUILayout.TextField(connectionUi.ManualPort, GUILayout.Width(150));
                 GUILayout.EndHorizontal();
                 if (GUILayout.Button("手动连接"))
                 {
-                    if (int.TryParse(manualPort, out int p))
+                    if (int.TryParse(connectionUi.ManualPort, out int p))
                     {
                         if (netManager == null || !netManager.IsRunning || IsServer || !networkStarted)
                         {
                             StartNetwork(false);
                         }
 
-                        ConnectToHost(manualIP, p);
+                        ConnectToHost(connectionUi.ManualIP, p);
                     }
                     else
                     {
-                        status = "端口格式错误";
+                        connectionUi.Status = "端口格式错误";
                     }
                 }
 
                 GUILayout.Space(20);
-                GUILayout.Label("状态: " + status);
+                GUILayout.Label("状态: " + connectionUi.Status);
             }
             else
             {
