@@ -614,16 +614,14 @@ namespace 鸭科夫联机Mod
         public NetManager netManager;
         public NetDataWriter writer;
         public int port = 9050;
-        private List<string> hostList = new List<string>();
-        private HashSet<string> hostSet = new HashSet<string>();
-        private bool isConnecting = false;
-        private string status = "未连接";
-        private string manualIP = "127.0.0.1";
-        private string manualPort = "9050"; // GTX 5090 我也想要
+        private readonly LanDiscoveryController _lanDiscovery = new LanDiscoveryController();
+        private readonly NetworkPlayerRegistry _players = new NetworkPlayerRegistry();
+        public Dictionary<NetPeer, PlayerStatus> playerStatuses => _players.ServerStatuses;
+        public Dictionary<NetPeer, GameObject> remoteCharacters => _players.ServerCharacters;
+        public Dictionary<string, PlayerStatus> clientPlayerStatuses => _players.ClientStatuses;
+        public Dictionary<string, GameObject> clientRemoteCharacters => _players.ClientCharacters;
         public NetPeer connectedPeer;
         public bool networkStarted = false;
-        private float broadcastTimer = 0f;
-        private float broadcastInterval = 5f;
         private float syncTimer = 0f;
         private float syncInterval = 0.015f; // =========== Mod开发者注意现在是TI版本也就是满血版无同步延迟，0.03 ~33ms ===================
         public Harmony Harmony;
@@ -633,13 +631,6 @@ namespace 鸭科夫联机Mod
         // 服务器：按 NetPeer 管理
         public readonly HashSet<int> _dedupeShotFrame = new HashSet<int>(); // 本帧已发过的标记
         public PlayerStatus localPlayerStatus;
-        public readonly Dictionary<NetPeer, PlayerStatus> playerStatuses = new Dictionary<NetPeer, PlayerStatus>();
-        public readonly Dictionary<NetPeer, GameObject> remoteCharacters = new Dictionary<NetPeer, GameObject>();
-
-        // 客户端：按 endPoint(玩家ID) 管理
-        public readonly Dictionary<string, PlayerStatus> clientPlayerStatuses = new Dictionary<string, PlayerStatus>();
-        public readonly Dictionary<string, GameObject> clientRemoteCharacters = new Dictionary<string, GameObject>();
-
         // weaponTypeId(= Item.TypeID) -> projectile prefab
         private readonly Dictionary<int, Projectile> _projCacheByWeaponType = new Dictionary<int, Projectile>();
         // 缓存：武器TypeID -> 枪口火Prefab（可能为null）
@@ -1112,16 +1103,10 @@ namespace 鸭科夫联机Mod
             }
 
             networkStarted = true;
-            status = "网络已启动";
-            hostList.Clear();
-            hostSet.Clear();
-            isConnecting = false;
+            _lanDiscovery.ResetForNetworkStart();
             connectedPeer = null;
 
-            playerStatuses.Clear();
-            remoteCharacters.Clear();
-            clientPlayerStatuses.Clear();
-            clientRemoteCharacters.Clear();
+            _players.ResetForNetworkStart();
 
             InitializeLocalPlayer();
             if (IsServer)
@@ -1208,19 +1193,11 @@ namespace 鸭科夫联机Mod
             }
             networkStarted = false;
             connectedPeer = null;
+            _lanDiscovery.SetStatus("未连接");
 
-            playerStatuses.Clear();
-            clientPlayerStatuses.Clear();
+            _players.ClearAll(Destroy);
 
             localPlayerStatus = null;
-
-            foreach (var kvp in remoteCharacters)
-                if (kvp.Value != null) Destroy(kvp.Value);
-            remoteCharacters.Clear();
-
-            foreach (var kvp in clientRemoteCharacters)
-                if (kvp.Value != null) Destroy(kvp.Value);
-            clientRemoteCharacters.Clear();
 
             ItemAgent_Gun.OnMainCharacterShootEvent -= Host_OnMainCharacterShoot;
         }
@@ -1276,14 +1253,9 @@ namespace 鸭科夫联机Mod
 
                // if (IsServer) Server_EnsureAllHealthHooks();
 
-                if (!IsServer && !isConnecting)
+                if (!IsServer)
                 {
-                    broadcastTimer += Time.deltaTime;
-                    if (broadcastTimer >= broadcastInterval)
-                    {
-                        SendBroadcastDiscovery();
-                        broadcastTimer = 0f;
-                    }
+                    _lanDiscovery.Tick(Time.deltaTime, SendBroadcastDiscovery);
                 }
 
                 syncTimer += Time.deltaTime;
@@ -2347,8 +2319,7 @@ namespace 鸭科夫联机Mod
 
             if (!IsServer)
             {
-                status = $"已连接到 {peer.EndPoint}";
-                isConnecting = false;
+                _lanDiscovery.SetStatus($"已连接到 {peer.EndPoint}");
                 SendClientStatusUpdate();
             }
 
@@ -4343,8 +4314,7 @@ namespace 鸭科夫联机Mod
             Debug.Log($"断开连接: {peer.EndPoint}, 原因: {disconnectInfo.Reason}");
             if (!IsServer)
             {
-                status = "连接断开";
-                isConnecting = false;
+                _lanDiscovery.SetStatus("连接断开");
             }
             if (connectedPeer == peer) connectedPeer = null;
 
@@ -4389,10 +4359,8 @@ namespace 鸭科夫联机Mod
             else if (!IsServer && msg == "DISCOVER_RESPONSE")
             {
                 string hostInfo = remoteEndPoint.Address + ":" + port;
-                if (!hostSet.Contains(hostInfo))
+                if (_lanDiscovery.TryAddHost(hostInfo))
                 {
-                    hostSet.Add(hostInfo);
-                    hostList.Add(hostInfo);
                     Debug.Log("发现主机: " + hostInfo);
                 }
             }
@@ -4411,14 +4379,12 @@ namespace 鸭科夫联机Mod
             // 基础校验
             if (string.IsNullOrWhiteSpace(ip))
             {
-                status = "IP为空";
-                isConnecting = false;
+                _lanDiscovery.SetError("IP为空");
                 return;
             }
             if (port <= 0 || port > 65535)
             {
-                status = "端口不合法";
-                isConnecting = false;
+                _lanDiscovery.SetError("端口不合法");
                 return;
             }
 
@@ -4427,7 +4393,7 @@ namespace 鸭科夫联机Mod
                 Debug.LogWarning("服务器模式不能主动连接其他主机");
                 return;
             }
-            if (isConnecting)
+            if (_lanDiscovery.IsConnecting)
             {
                 Debug.LogWarning("正在连接中.");
                 return;
@@ -4443,8 +4409,7 @@ namespace 鸭科夫联机Mod
                 catch (Exception e)
                 {
                     Debug.LogError($"启动客户端网络失败：{e}");
-                    status = "客户端网络启动失败";
-                    isConnecting = false;
+                    _lanDiscovery.SetError("客户端网络启动失败");
                     return;
                 }
             }
@@ -4452,15 +4417,13 @@ namespace 鸭科夫联机Mod
             // 二次确认
             if (netManager == null || !netManager.IsRunning)
             {
-                status = "客户端未启动";
-                isConnecting = false;
+                _lanDiscovery.SetError("客户端未启动");
                 return;
             }
 
             try
             {
-                status = $"连接中: {ip}:{port}";
-                isConnecting = true;
+                _lanDiscovery.BeginConnecting(ip, port);
 
                 // 若已有连接，先断开（以免残留状态）
                 try { connectedPeer?.Disconnect(); } catch { }
@@ -4475,8 +4438,7 @@ namespace 鸭科夫联机Mod
             catch (Exception ex)
             {
                 Debug.LogError($"连接到主机失败: {ex}");
-                status = "连接失败";
-                isConnecting = false;
+                _lanDiscovery.SetError("连接失败");
                 connectedPeer = null;
             }
         }
@@ -4708,13 +4670,13 @@ namespace 鸭科夫联机Mod
             {
                 GUILayout.Label("🔍 局域网主机列表");
 
-                if (hostList.Count == 0)
+                if (_lanDiscovery.HostCount == 0)
                 {
                     GUILayout.Label("（等待广播回应，暂无主机）");
                 }
                 else
                 {
-                    foreach (var host in hostList)
+                    foreach (var host in _lanDiscovery.Hosts)
                     {
                         GUILayout.BeginHorizontal();
                         if (GUILayout.Button("连接", GUILayout.Width(60)))
@@ -4739,31 +4701,31 @@ namespace 鸭科夫联机Mod
                 GUILayout.Label("手动输入 IP 和端口连接:");
                 GUILayout.BeginHorizontal();
                 GUILayout.Label("IP:", GUILayout.Width(40));
-                manualIP = GUILayout.TextField(manualIP, GUILayout.Width(150));
+                _lanDiscovery.ManualIP = GUILayout.TextField(_lanDiscovery.ManualIP, GUILayout.Width(150));
                 GUILayout.EndHorizontal();
                 GUILayout.BeginHorizontal();
                 GUILayout.Label("端口:", GUILayout.Width(40));
-                manualPort = GUILayout.TextField(manualPort, GUILayout.Width(150));
+                _lanDiscovery.ManualPort = GUILayout.TextField(_lanDiscovery.ManualPort, GUILayout.Width(150));
                 GUILayout.EndHorizontal();
                 if (GUILayout.Button("手动连接"))
                 {
-                    if (int.TryParse(manualPort, out int p))
+                    if (int.TryParse(_lanDiscovery.ManualPort, out int p))
                     {
                         if (netManager == null || !netManager.IsRunning || IsServer || !networkStarted)
                         {
                             StartNetwork(false);
                         }
 
-                        ConnectToHost(manualIP, p);
+                        ConnectToHost(_lanDiscovery.ManualIP, p);
                     }
                     else
                     {
-                        status = "端口格式错误";
+                        _lanDiscovery.SetError("端口格式错误");
                     }
                 }
 
                 GUILayout.Space(20);
-                GUILayout.Label("状态: " + status);
+                GUILayout.Label("状态: " + _lanDiscovery.Status);
             }
             else
             {
